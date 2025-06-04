@@ -3,11 +3,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import math
 
-# Parameters
+# Set Parameters
 BATTERY_CAPACITY = 10  # kWh
 POWER_RATING = 1       # kW (change this to test different c-rates)
 EFFICIENCY = 0.95
 
+# Export Day-Ahead Auction prices from https://energy-charts.info/charts/price_spot_market/chart.htm
+# Call it energy.csv
+# Load the CSV file
 def load_data():
     df = pd.read_csv('energy.csv', skiprows=2)
     df = df.iloc[:, [0, 3]]
@@ -18,20 +21,22 @@ def load_data():
     df['date'] = df['timestamp'].dt.date
     return df
 
+# Find hours with lowest prices
 def select_hours(daily, n_hours, before=None):
     """Select n_hours with lowest price before a certain time (or whole day if before=None)"""
     if before is not None:
         daily = daily[daily['timestamp'] < before]
     return daily.nsmallest(n_hours, 'price_eur_kwh')
 
+# Find hours with highest prices
 def select_hours_desc(daily, n_hours, after=None):
     """Select n_hours with highest price after a certain time (or whole day if after=None)"""
     if after is not None:
         daily = daily[daily['timestamp'] > after]
     return daily.nlargest(n_hours, 'price_eur_kwh')
 
+# Try all possible splits: all charging hours before all discharging hours
 def optimize_day(daily, cycle_hours):
-    # Try all possible splits: all charging hours before all discharging hours
     best = None
     for split in range(cycle_hours, len(daily) - cycle_hours + 1):
         charge_block = daily.iloc[:split]
@@ -53,6 +58,7 @@ def optimize_day(daily, cycle_hours):
             )
     return best
 
+# Find optimal charging and discharging scenario
 def run_bess(df):
     cycle_hours = math.ceil(BATTERY_CAPACITY / POWER_RATING)
     results = []
@@ -81,28 +87,47 @@ def run_bess(df):
             df.at[idx, 'soc'] = soc
     return df, results
 
-def plot_bess(df):
+# Plot results
+def plot_bess(df, results):
     fig, ax1 = plt.subplots(figsize=(12, 6))
+
     ax1.plot(df['timestamp'], df['price_eur_kwh'], label='Price (EUR/kWh)', color='tab:blue')
     ax2 = ax1.twinx()
     ax2.plot(df['timestamp'], df['soc']/BATTERY_CAPACITY*100, label='SOC (%)', color='tab:red', linewidth=2)
+
     ax1.set_xlabel('Time')
     ax1.set_ylabel('Price (EUR/kWh)', color='tab:blue')
     ax2.set_ylabel('SOC (%)', color='tab:red')
+
     charge_mask = df['action'] == 'charge'
     discharge_mask = df['action'] == 'discharge'
-    ax1.scatter(df[charge_mask]['timestamp'], df[charge_mask]['price_eur_kwh'], color='green', marker='^', s=100, label='Charge')
-    ax1.scatter(df[discharge_mask]['timestamp'], df[discharge_mask]['price_eur_kwh'], color='red', marker='v', s=100, label='Discharge')
+    ax1.scatter(df[charge_mask]['timestamp'], df[charge_mask]['price_eur_kwh'],
+                color='green', marker='^', s=100, label='Charge')
+    ax1.scatter(df[discharge_mask]['timestamp'], df[discharge_mask]['price_eur_kwh'],
+                color='red', marker='v', s=100, label='Discharge')
+
     ax1.legend(loc='upper left')
     ax2.legend(loc='upper right')
     plt.title(f'BESS Optimal Arbitrage | {POWER_RATING} kW, {BATTERY_CAPACITY} kWh, C={POWER_RATING/BATTERY_CAPACITY:.2f}')
-    plt.tight_layout()
+
+    # Compose the result text
+    result_text = "Optimization Results:\n"
+    for date, op in results:
+        result_text += (
+            f"{date}: Profit: {op['profit']:.2f} €, Charge cost: {op['charge_cost']:.2f} €, Discharge revenue: {op['discharge_revenue']:.2f} €\n"
+        )
+
+    # Put the text below the plot
+    plt.figtext(0.1, 0.01, result_text, fontsize=10, fontfamily='monospace')
+
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
     plt.show()
+
+
 
 if __name__ == "__main__":
     df = load_data()
     df, results = run_bess(df)
-    plot_bess(df)
+    plot_bess(df, results)  # Pass results to plotting function
     df.to_csv('bess_results.csv', index=False)
-    for date, op in results:
-        print(f"{date}: Profit={op['profit']:.2f} EUR, Charge cost={op['charge_cost']:.2f}, Discharge revenue={op['discharge_revenue']:.2f}")
+
